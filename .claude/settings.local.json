@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(php -l app/Livewire/GroupRegistrationWizard.php)",
+      "Bash(php -l app/Models/Group.php)"
+    ]
+  }
+}

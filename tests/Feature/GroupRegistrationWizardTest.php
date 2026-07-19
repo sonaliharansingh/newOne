@@ -45,6 +45,9 @@ class GroupRegistrationWizardTest extends TestCase
             ->set('registrationType', 'solo')
             ->call('proceedToStep3')
             ->assertSet('step', 4)
+            ->assertSet('showPreview', false)
+            ->call('previewAllocation')
+            ->assertSet('showPreview', true)
             ->call('confirmSubmission')
             ->assertSet('step', 5)
             ->assertSee('booking');
@@ -84,7 +87,10 @@ class GroupRegistrationWizardTest extends TestCase
             ->set('members.0.relation_type', 'Spouse')
             ->call('proceedToStep4')
             ->assertHasNoErrors()
-            ->assertSet('step', 4);
+            ->assertSet('step', 4)
+            ->assertSet('showPreview', false)
+            ->call('previewAllocation')
+            ->assertSet('showPreview', true);
 
         $group = Group::first();
         $this->assertNotNull($group);
@@ -112,7 +118,9 @@ class GroupRegistrationWizardTest extends TestCase
             ->set('trip_end_date', '2026-08-05')
             ->set('registrationType', 'solo')
             ->call('proceedToStep3')
-            ->assertSet('step', 4);
+            ->assertSet('step', 4)
+            ->call('previewAllocation')
+            ->assertSet('showPreview', true);
 
         $group = Group::first();
         $this->assertNotNull($group);

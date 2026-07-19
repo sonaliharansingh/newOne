@@ -24,6 +24,9 @@ use Illuminate\Support\Collection;
  */
 class ExtendedFamilyStrategy extends AbstractAllocationStrategy
 {
+    /** Spouse/Partner relations whose two members must never be separated by the gender split. */
+    private const COUPLE_RELATIONS = ['Spouse', 'Partner'];
+
     public function __construct(private GuardianValidationService $guardianValidation) {}
 
     protected function priorityLevel(): int
@@ -44,15 +47,19 @@ class ExtendedFamilyStrategy extends AbstractAllocationStrategy
 
         $privacyOnly = $this->guardianValidation->hasSoloMaleGuardianException($members);
         $preferElderlyFriendly = $this->hasSenior($members);
-        $womenOnly = $this->isAllFemale($members) ? null : false;
+        $allFemale = $this->isAllFemale($members);
+        $count = $members->count();
 
+        // A whole (possibly mixed-gender) family in one room needs a room with no gender_lock;
+        // placeGender is null so only unlocked rooms qualify, and the room is then reserved to
+        // the cluster so no outsider fills the spare beds.
         $singleRoom = $privacyOnly
-            ? $this->findRoom($members->count(), requirePrivate: true, womenOnly: false, preferElderlyFriendly: $preferElderlyFriendly)
-            : $this->findRoom($members->count(), requirePrivate: false, womenOnly: $womenOnly, preferElderlyFriendly: $preferElderlyFriendly)
-                ?? $this->findRoom($members->count(), requirePrivate: true, womenOnly: $womenOnly, preferElderlyFriendly: $preferElderlyFriendly);
+            ? $this->findRoom($count, requirePrivate: true, placeGender: null, allFemale: false, clusterId: $cluster->id, preferElderlyFriendly: $preferElderlyFriendly)
+            : $this->findRoom($count, requirePrivate: false, placeGender: null, allFemale: $allFemale, clusterId: $cluster->id, preferElderlyFriendly: $preferElderlyFriendly)
+                ?? $this->findRoom($count, requirePrivate: true, placeGender: null, allFemale: $allFemale, clusterId: $cluster->id, preferElderlyFriendly: $preferElderlyFriendly);
 
         if ($singleRoom) {
-            $this->allocateMembersToRoom($members, $singleRoom, $cluster, $group);
+            $this->allocateMembersToRoom($members, $singleRoom, $cluster, $group, reserveForFamily: true);
 
             return true;
         }
@@ -66,52 +73,142 @@ class ExtendedFamilyStrategy extends AbstractAllocationStrategy
 
     private function genderSplit(FamilyCluster $cluster, Collection $members, Group $group): bool
     {
-        [$femaleGroup, $maleGroup] = $members->partition(
-            fn (GroupMember $member) => $member->user->gender === 'female' || $member->isMinorRequiringFemaleGuardian()
+        // A Spouse/Partner couple straddles the gender line, so a plain male/female split would
+        // separate them. For an all-adult cluster we keep couples whole (both partners on the
+        // same side). When a minor requiring a guardian is present the older behaviour wins —
+        // under-15s ride with the female guardian — since a two-adult couple kept together
+        // could otherwise strand the minors in a room with no adult.
+        [$groupA, $groupB] = $this->hasMinorRequiringGuardian($members)
+            ? $this->genderPartition($members)
+            : $this->coupleAwarePartition($members);
+
+        if ($groupA->isEmpty() || $groupB->isEmpty()) {
+            // The couple-aware split put everyone on one side (e.g. no non-couple male exists);
+            // fall back to a plain gender partition before giving up.
+            [$groupA, $groupB] = $this->genderPartition($members);
+        }
+
+        if ($groupA->isEmpty() || $groupB->isEmpty()) {
+            return false;
+        }
+
+        // Each split room stays the family's own (reserved to the cluster) so no stranger takes
+        // the spare beds; placeGender only steers away from rooms a stranger already gender-locked.
+        // A mixed side (a couple) needs an unlocked room (bucketGender null), so no stranger's
+        // gender-locked room is reused for it.
+        $roomA = $this->findRoom(
+            $groupA->count(),
+            requirePrivate: false,
+            placeGender: $this->bucketGender($groupA),
+            allFemale: $this->isAllFemale($groupA),
+            clusterId: $cluster->id,
+            preferElderlyFriendly: $this->hasSenior($groupA),
         );
 
-        $femaleGroup = $femaleGroup->values();
-        $maleGroup = $maleGroup->values();
-
-        if ($femaleGroup->isEmpty() || $maleGroup->isEmpty()) {
+        if (! $roomA) {
             return false;
         }
 
-        $femaleRoom = $this->findRoom($femaleGroup->count(), requirePrivate: false, womenOnly: true, preferElderlyFriendly: $this->hasSenior($femaleGroup))
-            ?? $this->findRoom($femaleGroup->count(), requirePrivate: false, womenOnly: null, preferElderlyFriendly: $this->hasSenior($femaleGroup));
+        $roomB = $this->findAdjacentRoom($groupB, $roomA, $cluster->id, $this->hasSenior($groupB));
 
-        if (! $femaleRoom) {
+        if (! $roomB) {
             return false;
         }
 
-        $maleRoom = $this->findAdjacentRoom($maleGroup->count(), $femaleRoom, $this->hasSenior($maleGroup));
-
-        if (! $maleRoom) {
-            return false;
-        }
-
-        $this->allocateMembersToRoom($femaleGroup, $femaleRoom, $cluster, $group);
-        $this->allocateMembersToRoom($maleGroup, $maleRoom, $cluster, $group);
+        $this->allocateMembersToRoom($groupA, $roomA, $cluster, $group, reserveForFamily: true);
+        $this->allocateMembersToRoom($groupB, $roomB, $cluster, $group, reserveForFamily: true);
 
         return true;
     }
 
-    private function findAdjacentRoom(int $headcount, Room $anchor, bool $preferElderlyFriendly = false): ?Room
+    /**
+     * The plain split: females (and every under-15 minor, so they ride with a female guardian)
+     * in one room, the remaining males in the other.
+     *
+     * @param  Collection<int, GroupMember>  $members
+     * @return array{0: Collection<int, GroupMember>, 1: Collection<int, GroupMember>}
+     */
+    private function genderPartition(Collection $members): array
     {
-        // "Adjacent" is satisfied at floor level (same floor as the anchor room); rooms are
-        // ordered by available_count for best-fit rather than by parsing room_number, since
-        // room_number is a free-form string and that parsing isn't portable across DB engines.
-        $sameFloor = Room::query()
-            ->where('room_status', '!=', 'maintenance')
-            ->where('available_count', '>=', $headcount)
-            ->where('women_only', false)
-            ->where('room_type', '!=', 'dormitory')
-            ->where('floor_id', $anchor->floor_id)
-            ->where('id', '!=', $anchor->id)
-            ->when($preferElderlyFriendly, fn ($query) => $query->orderByDesc('elderly_friendly')->orderByDesc('lift_access'))
-            ->orderBy('available_count')
-            ->first();
+        [$femaleGroup, $maleGroup] = $members->partition(
+            fn (GroupMember $member) => $member->user->gender === 'female' || $member->isMinorRequiringFemaleGuardian()
+        );
 
-        return $sameFloor ?? $this->findRoomExcluding($headcount, requirePrivate: false, womenOnly: false, excludeRoomIds: [$anchor->id], preferElderlyFriendly: $preferElderlyFriendly);
+        return [$femaleGroup->values(), $maleGroup->values()];
+    }
+
+    /**
+     * Keeps each Spouse/Partner couple whole by pinning both partners to the same side: couples
+     * plus every other female share one room, the remaining (non-couple) males the other.
+     *
+     * @param  Collection<int, GroupMember>  $members
+     * @return array{0: Collection<int, GroupMember>, 1: Collection<int, GroupMember>}
+     */
+    private function coupleAwarePartition(Collection $members): array
+    {
+        $coupleIds = $this->coupleMemberIds($members);
+
+        [$groupA, $groupB] = $members->partition(
+            fn (GroupMember $member) => in_array($member->id, $coupleIds, true) || $member->user->gender === 'female'
+        );
+
+        return [$groupA->values(), $groupB->values()];
+    }
+
+    /**
+     * The group_member ids belonging to a Spouse/Partner couple: each such member and the member
+     * it is related to (related_user_id references a group_members row, despite its name).
+     *
+     * @param  Collection<int, GroupMember>  $members
+     * @return array<int, int>
+     */
+    private function coupleMemberIds(Collection $members): array
+    {
+        $byId = $members->keyBy('id');
+        $ids = [];
+
+        foreach ($members as $member) {
+            if (! in_array($member->relation_type, self::COUPLE_RELATIONS, true)) {
+                continue;
+            }
+
+            $ids[$member->id] = $member->id;
+
+            if ($member->related_user_id !== null && $byId->has($member->related_user_id)) {
+                $ids[$member->related_user_id] = $member->related_user_id;
+            }
+        }
+
+        return array_values($ids);
+    }
+
+    /**
+     * @param  Collection<int, GroupMember>  $members
+     */
+    private function hasMinorRequiringGuardian(Collection $members): bool
+    {
+        return $members->contains(
+            fn (GroupMember $member) => $member->isMinorRequiringFemaleGuardian() || $member->isMinorRequiringMaleGuardian()
+        );
+    }
+
+    /**
+     * @param  Collection<int, GroupMember>  $group
+     */
+    private function findAdjacentRoom(Collection $group, Room $anchor, int $clusterId, bool $preferElderlyFriendly = false): ?Room
+    {
+        // "Adjacent" is satisfied at floor level (same floor as the anchor room). The candidate
+        // list is already best-fit ordered (available_count) and FOR UPDATE-locked, so we take
+        // the first same-floor room, else the first anywhere.
+        $candidates = $this->candidateRooms(
+            $group->count(),
+            requirePrivate: false,
+            placeGender: $this->bucketGender($group),
+            allFemale: $this->isAllFemale($group),
+            clusterId: $clusterId,
+            preferElderlyFriendly: $preferElderlyFriendly,
+        )->reject(fn (Room $room) => $room->id === $anchor->id)->values();
+
+        return $candidates->firstWhere('floor_id', $anchor->floor_id) ?? $candidates->first();
     }
 }

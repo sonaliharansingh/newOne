@@ -24,6 +24,8 @@ class Room extends Model
         'lift_access',
         'staircase_access',
         'women_only',
+        'gender_lock',
+        'reserved_for_cluster_id',
         'elderly_friendly',
         'room_status',
     ];
@@ -57,5 +59,15 @@ class Room extends Model
     public function hasCapacityFor(int $count): bool
     {
         return $this->room_status !== 'maintenance' && $this->available_count >= $count;
+    }
+
+    /**
+     * The gender a pilgrim must be to legally take a bed in this room, or null if the room
+     * is open to anyone. women_only is a permanent hotel-declared constraint that always
+     * wins; gender_lock is the runtime lock seeded by the first occupant of a shared room.
+     */
+    public function effectiveGenderLock(): ?string
+    {
+        return $this->women_only ? 'female' : $this->gender_lock;
     }
 }

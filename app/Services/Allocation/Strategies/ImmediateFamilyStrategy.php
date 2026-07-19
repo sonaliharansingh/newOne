@@ -39,15 +39,20 @@ class ImmediateFamilyStrategy extends AbstractAllocationStrategy
             return false;
         }
 
-        $womenOnly = $this->isAllFemale($members) ? null : false;
-
-        $room = $this->findRoom($members->count(), requirePrivate: true, womenOnly: $womenOnly, preferElderlyFriendly: $this->hasSenior($members));
+        $room = $this->findRoom(
+            $members->count(),
+            requirePrivate: true,
+            placeGender: null,
+            allFemale: $this->isAllFemale($members),
+            clusterId: $cluster->id,
+            preferElderlyFriendly: $this->hasSenior($members),
+        );
 
         if (! $room) {
             return false;
         }
 
-        $this->allocateMembersToRoom($members, $room, $cluster, $group);
+        $this->allocateMembersToRoom($members, $room, $cluster, $group, reserveForFamily: true);
 
         return true;
     }

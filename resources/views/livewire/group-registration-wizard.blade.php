@@ -242,8 +242,62 @@
                 </div>
             @endif
 
-            {{-- Step 4: Review + live allocation preview --}}
-            @if ($step === 4)
+            {{-- Step 4a: Review your details (confirmation before the engine runs) --}}
+            @if ($step === 4 && ! $showPreview)
+                <h2>Review Your Details</h2>
+                <p class="text-muted">Please check everything below. You can go back and change anything before we generate your room preview.</p>
+
+                <div class="cluster-card">
+                    <div class="member-row-header">
+                        <span class="member-row-title">Personal Details</span>
+                        <button type="button" class="btn btn-secondary" wire:click="goToStep1">Edit</button>
+                    </div>
+                    <ul class="member-list">
+                        <li>{{ trim("{$first_name} {$last_name}") }} — {{ ucfirst($gender) }}, born {{ $date_of_birth }}</li>
+                        <li>Phone: {{ $phone }}{{ $city ? ', '.$city : '' }}</li>
+                    </ul>
+                </div>
+
+                <div class="cluster-card">
+                    <div class="member-row-header">
+                        <span class="member-row-title">Trip &amp; Registration</span>
+                        <button type="button" class="btn btn-secondary" wire:click="$set('step', 2)">Edit</button>
+                    </div>
+                    <ul class="member-list">
+                        <li>{{ ucfirst($registrationType) }} registration{{ $registrationType === 'group' ? ' — '.$groupName : '' }}</li>
+                        <li>Trip: {{ $trip_start_date }} &rarr; {{ $trip_end_date }}</li>
+                    </ul>
+                </div>
+
+                @if ($registrationType === 'group')
+                    <div class="cluster-card">
+                        <div class="member-row-header">
+                            <span class="member-row-title">Group Members ({{ count($members) + 1 }})</span>
+                            <button type="button" class="btn btn-secondary" wire:click="backToStep3">Edit</button>
+                        </div>
+                        <ul class="member-list">
+                            <li>{{ trim("{$first_name} {$last_name}") }} (You)</li>
+                            @foreach ($members as $member)
+                                <li>
+                                    {{ trim(($member['first_name'] ?? '').' '.($member['last_name'] ?? '')) }}
+                                    {{ ! empty($member['relation_type']) ? '('.$member['relation_type'].')' : '' }}
+                                    {{ ! empty($member['gender']) ? '— '.ucfirst($member['gender']) : '' }}
+                                </li>
+                            @endforeach
+                        </ul>
+                    </div>
+                @endif
+
+                <div class="form-row-end">
+                    <button type="button" class="btn btn-secondary" wire:click="backFromReview">Back</button>
+                    <button type="button" class="btn btn-primary" wire:click="previewAllocation" wire:loading.attr="disabled">
+                        Confirm &amp; Preview Allocation
+                    </button>
+                </div>
+            @endif
+
+            {{-- Step 4b: live allocation preview --}}
+            @if ($step === 4 && $showPreview)
                 <h2>Review &amp; Allocation Preview</h2>
                 <p class="text-muted">This is a live preview from the allocation engine. An admin will confirm your final rooms.</p>
 
@@ -313,9 +367,7 @@
                 @endforeach
 
                 <div class="form-row-end">
-                    @if ($registrationType === 'group')
-                        <button type="button" class="btn btn-secondary" wire:click="backToStep3">Back</button>
-                    @endif
+                    <button type="button" class="btn btn-secondary" wire:click="backToConfirmation">Back</button>
                     <button type="button" class="btn btn-primary" wire:click="confirmSubmission">Confirm &amp; Submit</button>
                 </div>
             @endif

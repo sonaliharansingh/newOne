@@ -31,11 +31,15 @@ class SoloPoolStrategy extends AbstractAllocationStrategy
         }
 
         $member = $members->first();
-        $womenOnly = $member->user->gender === 'female' ? null : false;
+        $gender = $member->user->gender;
+        $allFemale = $gender === 'female';
         $preferElderlyFriendly = $this->hasSenior($members);
 
-        $room = $this->findRoom(1, requirePrivate: false, womenOnly: $womenOnly, excludeDormitory: false, preferElderlyFriendly: $preferElderlyFriendly)
-            ?? $this->findRoom(1, requirePrivate: true, womenOnly: $womenOnly, preferElderlyFriendly: $preferElderlyFriendly);
+        // Shared stock first (dormitories included), consolidating this pilgrim into a partial
+        // room that is gender-compatible and closest on locality (city -> area -> language),
+        // so no partial bed is left stranded; a private room is the last resort.
+        $room = $this->findRoom(1, requirePrivate: false, placeGender: $gender, allFemale: $allFemale, clusterId: $cluster->id, excludeDormitory: false, preferElderlyFriendly: $preferElderlyFriendly, anchor: $member)
+            ?? $this->findRoom(1, requirePrivate: true, placeGender: $gender, allFemale: $allFemale, clusterId: $cluster->id, preferElderlyFriendly: $preferElderlyFriendly, anchor: $member);
 
         if (! $room) {
             return false;

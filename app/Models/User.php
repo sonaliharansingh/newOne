@@ -26,6 +26,7 @@ class User extends Authenticatable
         'mother_name',
         'phone',
         'city',
+        'area',
         'state',
         'country',
         'address',

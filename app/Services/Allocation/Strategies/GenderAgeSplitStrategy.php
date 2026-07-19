@@ -55,14 +55,14 @@ class GenderAgeSplitStrategy extends AbstractAllocationStrategy
             return $representative->user->gender.':'.$this->ageBand($representative->user->age).':'.($representative->user->city ?: 'unspecified');
         });
 
-        $plan = $this->buildPlan($buckets);
+        $plan = $this->buildPlan($buckets, $cluster->id);
 
         if ($plan === null) {
             return false;
         }
 
-        foreach ($plan as [$bucketMembers, $room]) {
-            $this->allocateMembersToRoom($bucketMembers, $room, $cluster, $group);
+        foreach ($plan as [$bucketMembers, $room, $lockGender]) {
+            $this->allocateMembersToRoom($bucketMembers, $room, $cluster, $group, genderLock: $lockGender);
         }
 
         return true;
@@ -119,21 +119,23 @@ class GenderAgeSplitStrategy extends AbstractAllocationStrategy
 
     /**
      * Packs whole units (never split across the room-capacity boundary) into rooms per bucket.
+     * Each bucket is a single gender, so every room it seeds is gender-locked to that gender.
      *
-     * @return array<int, array{0: Collection<int, GroupMember>, 1: Room}>|null
+     * @return array<int, array{0: Collection<int, GroupMember>, 1: Room, 2: string}>|null
      */
-    private function buildPlan(Collection $buckets): ?array
+    private function buildPlan(Collection $buckets, int $clusterId): ?array
     {
         $reserved = [];
         $plan = [];
 
         foreach ($buckets as $key => $unitsInBucket) {
             $remainingUnits = $unitsInBucket->values();
-            $womenOnly = str_starts_with($key, 'female') ? null : false;
+            $lockGender = explode(':', $key)[0]; // 'male' | 'female' | 'other'
+            $allFemale = $lockGender === 'female';
             $preferElderly = str_contains($key, ':senior:');
 
             while ($remainingUnits->isNotEmpty()) {
-                $room = $this->findAvailableRoomForPlan($womenOnly, $reserved, $preferElderly);
+                $room = $this->findAvailableRoomForPlan($lockGender, $allFemale, $clusterId, $reserved, $preferElderly);
 
                 if (! $room) {
                     return null;
@@ -159,7 +161,7 @@ class GenderAgeSplitStrategy extends AbstractAllocationStrategy
                 }
 
                 $reserved[$room->id] = ($reserved[$room->id] ?? 0) + $roomMembers->count();
-                $plan[] = [$roomMembers, $room];
+                $plan[] = [$roomMembers, $room, $lockGender];
                 $remainingUnits = $remainingUnits->only($keepIndices)->values();
             }
         }
@@ -167,14 +169,23 @@ class GenderAgeSplitStrategy extends AbstractAllocationStrategy
         return $plan;
     }
 
-    private function findAvailableRoomForPlan(?bool $womenOnly, array $reserved, bool $preferElderly = false): ?Room
+    /**
+     * Finds a shared room a single-gender bucket may pool into: not maintenance, gender-lock
+     * compatible, not a permanent women-only room (unless the bucket is female), and not
+     * reserved by a different family cluster. FOR UPDATE-locked against concurrent allocations.
+     */
+    private function findAvailableRoomForPlan(string $placeGender, bool $allFemale, int $clusterId, array $reserved, bool $preferElderly = false): ?Room
     {
         $rooms = Room::query()
             ->where('room_status', '!=', 'maintenance')
-            ->when($womenOnly !== null, fn ($query) => $query->where('women_only', $womenOnly))
+            ->where('available_count', '>=', 1)
+            ->where(fn ($query) => $query->whereNull('gender_lock')->orWhere('gender_lock', $placeGender))
+            ->when(! $allFemale, fn ($query) => $query->where('women_only', false))
+            ->where(fn ($query) => $query->whereNull('reserved_for_cluster_id')->orWhere('reserved_for_cluster_id', $clusterId))
             ->when($preferElderly, fn ($query) => $query->orderByDesc('elderly_friendly')->orderByDesc('lift_access'))
             ->orderBy('is_private')
             ->orderByDesc('available_count')
+            ->lockForUpdate()
             ->get();
 
         foreach ($rooms as $room) {

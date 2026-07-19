@@ -75,6 +75,18 @@ class PriorityAllocationEngine
                     $room->occupied_count = max(0, $room->occupied_count - 1);
                     $room->available_count = min($room->capacity, $room->available_count + 1);
                     $room->room_status = $room->available_count <= 0 ? 'full' : ($room->occupied_count > 0 ? 'partial' : 'available');
+
+                    // Once the room is empty again its runtime locks fall away: the gender lock
+                    // and any cluster reservation are only meaningful while someone occupies it.
+                    if ($room->occupied_count === 0) {
+                        $room->gender_lock = null;
+                        $room->reserved_for_cluster_id = null;
+                    } elseif ($room->reserved_for_cluster_id === $cluster->id) {
+                        // The reserving cluster is being torn down but beds remain (another
+                        // cluster shares the room) — drop the stale reservation.
+                        $room->reserved_for_cluster_id = null;
+                    }
+
                     $room->save();
                 }
 

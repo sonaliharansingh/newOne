@@ -65,7 +65,11 @@ class GroupRegistrationWizard extends Component
     // user_id (set once persisted), group_member_id (set once persisted).
     public array $members = [];
 
-    // Step 4 — preview results from the priority allocation engine.
+    // Step 4 — a confirmation summary of everything entered (showPreview === false) is shown
+    // first so the pilgrim can go back and change anything; only once they explicitly run the
+    // preview does the allocation engine execute and its results (showPreview === true) appear.
+    public bool $showPreview = false;
+
     public array $previewResults = [];
 
     // Step 5 — confirmation.
@@ -167,8 +171,10 @@ class GroupRegistrationWizard extends Component
         ]);
 
         if ($this->registrationType === 'solo') {
+            // Solo travellers have no members step; persist and drop straight onto the Review
+            // (confirmation) step, but don't run the engine yet — that waits for their confirm.
             $this->syncMembersToDatabase();
-            $this->runPreview();
+            $this->goToReview();
 
             return;
         }
@@ -195,7 +201,42 @@ class GroupRegistrationWizard extends Component
         ]);
 
         $this->syncMembersToDatabase();
+        $this->goToReview();
+    }
+
+    /**
+     * Lands on the Review step showing the confirmation summary (not the engine preview yet),
+     * so the pilgrim can double-check every detail and step back to change anything first.
+     */
+    public function goToReview(): void
+    {
+        $this->showPreview = false;
+        $this->step = 4;
+    }
+
+    /**
+     * Back out of the Review step to change details: group registrations return to the members
+     * step, solo registrations to the trip step.
+     */
+    public function backFromReview(): void
+    {
+        $this->showPreview = false;
+        $this->step = $this->registrationType === 'group' ? 3 : 2;
+    }
+
+    /**
+     * The pilgrim has confirmed their details — now actually run the allocation engine and
+     * reveal the preview. They can still step back to the summary to make changes.
+     */
+    public function previewAllocation(): void
+    {
         $this->runPreview();
+        $this->showPreview = true;
+    }
+
+    public function backToConfirmation(): void
+    {
+        $this->showPreview = false;
     }
 
     public function backToStep3(): void

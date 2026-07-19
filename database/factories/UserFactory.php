@@ -41,6 +41,7 @@ class UserFactory extends Factory
             'mother_name' => fake()->name('female'),
             'phone' => fake()->numerify('##########'),
             'city' => fake()->city(),
+            'area' => fake()->streetName(),
             'state' => fake()->state(),
             'country' => 'India',
             'address' => fake()->address(),
